@@ -1,0 +1,125 @@
+{
+  "project": "Minimalist Content-Focused Blog CMS",
+  "version": "1.0.0",
+  "designPhilosophy": {
+    "corePrinciple": "Content is the hero. All UI elements must be minimal, recede into the background, and serve to enhance the reading and writing experience.",
+    "keyGoals": ["Clarity", "Legibility", "Frictionless Creation", "High Performance"]
+  },
+  "aestheticSpecification": {
+    "typography": {
+      "headings": {
+        "fontFamily": "'Inter', sans-serif",
+        "fontWeight": 700
+      },
+      "body": {
+        "fontFamily": "'Lora', serif",
+        "fontWeight": 400,
+        "lineHeight": 1.7
+      },
+      "ui": {
+        "fontFamily": "'Inter', sans-serif",
+        "fontWeight": 500
+      }
+    },
+    "colorPalette": {
+      "primaryAction": "#A027F6",
+      "secondaryAction": "#E22ABA",
+      "searchHighlight": "#FFC200",
+      "warningAccent": "#FF8B06",
+      "successAccent": "#02FFCC",
+      "infoAccent": "#26EBEB",
+      "text": {
+        "lightMode": "#121212",
+        "darkMode": "#F5F5F5"
+      },
+      "background": {
+        "lightMode": "#FFFFFF",
+        "darkMode": "#121212"
+      }
+    },
+    "layout": {
+      "grid": "12-column responsive grid",
+      "spacingUnit": "8px",
+      "whitespace": "Generous use of whitespace to reduce cognitive load and improve focus."
+    }
+  },
+  "screenSpecifications": {
+    "articleEditor": {
+      "name": "Article Editor",
+      "userGroup": "Authors",
+      "description": "A distraction-free environment for content creation and management.",
+      "elements": [
+        {"element": "Main Content Area", "spec": "Single, auto-expanding textarea for Markdown-supported content."},
+        {"element": "Title Input", "spec": "Prominent input field at the top of the page."},
+        {"element": "AI Tools FAB", "spec": "Floating Action Button (#A027F6) that expands to show AI options."},
+        {"element": "Publish Button", "spec": "Primary action button, disabled until content is added."}
+      ],
+      "aiFeatures": {
+        "generateCover": {
+          "trigger": "Button next to title field, active when title is present.",
+          "flow": "Opens modal for prompt refinement, generates 8K ultra-realistic image based on title/summary, user can accept or retry.",
+          "styleTarget": "Ultra Realistic 8K"
+        },
+        "generateContent": {
+          "trigger": "Options revealed by AI Tools FAB.",
+          "flow": "Inserts AI-generated text (e.g., outline, headline) at cursor, highlighted for review."
+        }
+      },
+      "responsiveBehavior": {
+        "desktop": "Full-width editor with content centered in a readable column.",
+        "tablet": "Sidebar for settings collapses, more vertical spacing.",
+        "mobile": "Single-column view. FAB is moved to the bottom-right for easy thumb access."
+      }
+    },
+    "chronologicalPostList": {
+      "name": "Chronological Post List",
+      "userGroup": "Readers/Authors",
+      "description": "Displays all published articles in reverse chronological order.",
+      "elements": [
+        {"element": "Post Entry", "spec": "Card-based design with Cover Image, Title, and a 2-line excerpt."},
+        {"element": "Infinite Scroll", "spec": "Seamlessly loads more posts as the user scrolls down."}
+      ],
+      "responsiveBehavior": {
+        "desktop": "Single-column feed, max-width of 800px, centered.",
+        "tablet": "Feed takes up more screen width.",
+        "mobile": "Edge-to-edge cards, slightly smaller typography."
+      }
+    },
+    "individualPostView": {
+      "name": "Individual Post View",
+      "userGroup": "Readers",
+      "description": "Optimized reading experience for a single article.",
+      "elements": [
+        {"element": "Header", "spec": "Full-bleed 8K cover image followed by the article title."},
+        {"element": "Article Body", "spec": "High-contrast, legible text set in the 'Lora' typeface."},
+        {"element": "Author Info", "spec": "Subtle byline with author name and publication date."}
+      ],
+      "responsiveBehavior": {
+        "desktop": "Content column max-width of 720px for optimal readability.",
+        "tablet": "Content column expands slightly.",
+        "mobile": "Edge-to-edge content, typography adjusted for smaller screens."
+      }
+    },
+    "topicSearchResults": {
+      "name": "Topic Search Results",
+      "userGroup": "Readers",
+      "description": "Displays articles matching a user's search query.",
+      "elements": [
+        {"element": "Search Bar", "spec": "Prominently displayed at the top of the page."},
+        {"element": "Result List", "spec": "Similar to the chronological list, but with search terms highlighted."},
+        {"element": "Highlight Color", "spec": "Search query matches are highlighted with #FFC200."}
+      ],
+      "responsiveBehavior": {
+        "desktop": "Standard centered list view.",
+        "tablet": "Full-width list.",
+        "mobile": "Full-width list, search bar is sticky at the top during scroll."
+      }
+    }
+  },
+  "nonNegotiables": [
+    "Fully responsive design (Desktop, Tablet, Mobile).",
+    "No clutter: prioritize whitespace and high-contrast typography.",
+    "Strict adherence to the defined color palette.",
+    "Image generation feature must target an 'Ultra Realistic 8K' style."
+  ]
+}
