@@ -1,0 +1,132 @@
+# 📐 C4 Context Diagram - Assessor Pessoal PWA
+# Nível: System Context (C4 Level 1)
+
+c4:
+  level: Context
+  system:
+    name: "Assessor Pessoal PWA"
+    description: "Agente de IA que organiza compromissos/tarefas para usuários com TDAH via Google Calendar & Tasks"
+    boundaries:
+      - scheduling: "Regras de agenda, buffer de transição, reprogramação automática"
+      - integration: "OAuth2/PKCE, Google Calendar/Tasks sync, rate limiting"
+      - intelligence: "Prompt orchestration, task triage, priority scoring"
+      - notification: "Push, SMS fallback, offline queue, ADHD-friendly escalation"
+      - compliance: "Consent, audit trail, right_to_delete, data_export"
+    
+    users:
+      - name: "Usuário Final (Pessoal)"
+        description: "Interage via PWA, concede permissões Google, configura prioridades e buffers"
+        interactions:
+          - "Acessa interface PWA"
+          - "Concede consentimento LGPD/GDPR"
+          - "Configura agenda e preferências TDAH"
+          - "Recebe alertas escalonados"
+    
+    external_systems:
+      - name: "Google Calendar API"
+        type: "external_system"
+        description: "Leitura/escrita de eventos, sync bidirecional"
+        protocol: "REST/OAuth2"
+        data_flow: "bidirectional"
+        
+      - name: "Google Tasks API"
+        type: "external_system"
+        description: "Gerenciamento de tarefas, status, deadlines"
+        protocol: "REST/OAuth2"
+        data_flow: "bidirectional"
+        
+      - name: "AI Provider (Proxy)"
+        type: "external_system"
+        description: "Inferência de priorização e rescheduling via LLM"
+        protocol: "HTTPS/JSON"
+        providers: ["OpenRouter", "Together AI", "Qwen Free Tier"]
+        data_flow: "outbound"
+        
+      - name: "Push Notification Service"
+        type: "external_system"
+        description: "Web Push API para alertas offline/escalonados"
+        protocol: "Web Push Protocol"
+        data_flow: "outbound"
+        
+      - name: "Supabase Backend"
+        type: "internal_system"
+        description: "PostgreSQL + Edge Functions + Auth"
+        components:
+          - "PostgreSQL Database"
+          - "Edge Functions (Sync, Compliance, AI Proxy)"
+          - "GoTrue Authentication"
+        data_flow: "bidirectional"
+
+    relationships:
+      - id: "R-01"
+        source: "Usuário Final"
+        target: "Assessor Pessoal PWA"
+        description: "Acessa interface, concede consentimento LGPD, configura agenda"
+        protocol: "HTTPS/WebSocket"
+        authentication: "OAuth2 PKCE + Session JWT"
+        
+      - id: "R-02"
+        source: "Assessor Pessoal PWA"
+        target: "Google Calendar API"
+        description: "OAuth2 PKCE, CRUD eventos, sync delta"
+        protocol: "REST/HTTPS"
+        authentication: "OAuth2 Bearer Token"
+        rate_limit: "100 req/min"
+        
+      - id: "R-03"
+        source: "Assessor Pessoal PWA"
+        target: "Google Tasks API"
+        description: "CRUD tarefas, marcação de prioridade, status"
+        protocol: "REST/HTTPS"
+        authentication: "OAuth2 Bearer Token"
+        rate_limit: "100 req/min"
+        
+      - id: "R-04"
+        source: "Assessor Pessoal PWA"
+        target: "AI Provider (Proxy)"
+        description: "Envia contexto estruturado, recebe JSON de priorização"
+        protocol: "HTTPS/JSON"
+        authentication: "API Key (rotated 24h)"
+        metering: true
+        
+      - id: "R-05"
+        source: "Assessor Pessoal PWA"
+        target: "Push Notification Service"
+        description: "Dispara alertas escalonados com retry policy"
+        protocol: "Web Push"
+        authentication: "VAPID Keys"
+        
+      - id: "R-06"
+        source: "Assessor Pessoal PWA"
+        target: "Supabase Backend"
+        description: "Persistência local, Edge Functions, Auth"
+        protocol: "HTTPS/PostgreSQL"
+        authentication: "JWT Session"
+
+  compliance_boundaries:
+    lgpd_gdpr:
+      data_classification:
+        pii: ["user_id", "email", "calendar_events", "task_descriptions"]
+        sensitive: ["adhdi_profile", "behavioral_patterns"]
+      consent_requirements:
+        - "Explicit opt-in para sync Google"
+        - "Explicit opt-in para AI processing"
+        - "Right to delete (SLA 7 dias)"
+        - "Data portability (JSON/ICS export)"
+      audit_requirements:
+        - "Immutable logs criptografados"
+        - "Access trail por usuário"
+        - "Compliance webhook notifications"
+
+  security_zones:
+    - zone: "Public Internet"
+      trust_level: 0
+      components: ["Usuário Final", "External APIs"]
+      
+    - zone: "DMZ (Edge)"
+      trust_level: 1
+      components: ["Service Worker", "Edge Functions", "WAF"]
+      
+    - zone: "Private (Backend)"
+      trust_level: 2
+      components: ["Database", "AI Proxy Internal", "Audit Logs"]

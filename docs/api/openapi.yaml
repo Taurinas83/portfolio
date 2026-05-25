@@ -1,0 +1,1439 @@
+openapi: 3.0.3
+info:
+  title: "Assessor Pessoal API - ADHD-Focused PWA"
+  version: 1.0.0
+  description: |
+    Contratos para sync bidirecional Google Calendar/Tasks, 
+    priorização IA com contexto TDAH, compliance LGPD/GDPR e métricas de uso.
+    
+    ## Bounded Contexts
+    - **Scheduling**: Regras de agenda, buffer de transição, reprogramação automática
+    - **Integration**: OAuth2/PKCE, Google Calendar/Tasks sync, rate limiting
+    - **Intelligence**: Prompt orchestration, task triage, priority scoring
+    - **Notification**: Push, SMS fallback, offline queue, ADHD-friendly escalation
+    - **Compliance**: Consent, audit trail, right_to_delete, data_export
+    
+    ## Security
+    - OAuth2 PKCE para autenticação Google
+    - JWT sessions com refresh token rotation (max 30 dias)
+    - CSP strict-dynamic + Web Crypto AES-GCM para IndexedDB
+    - Rate limiting por IP/token (100 req/min)
+    
+    ## Compliance (LGPD/GDPR)
+    - Explicit opt-in para sync + AI processing
+    - Right to delete com SLA de 7 dias
+    - Data portability via export JSON/ICS
+    - Audit trail imutável criptografado
+
+servers:
+  - url: https://api.assessorpessoal.app/v1
+    description: Production
+  - url: https://staging-api.assessorpessoal.app/v1
+    description: Staging
+  - url: http://localhost:8787/v1
+    description: Local Development (Cloudflare Workers)
+
+tags:
+  - name: sync
+    description: Sincronização bidirecional Google Calendar/Tasks
+  - name: intelligence
+    description: Priorização IA e triagem de tarefas com contexto TDAH
+  - name: notification
+    description: Alertas escalonados e push notifications
+  - name: compliance
+    description: LGPD/GDPR - consentimento, deleção, exportação
+  - name: metering
+    description: Métricas de uso para billing e feature flags
+  - name: health
+    description: Health checks e status do sistema
+
+paths:
+  /health:
+    get:
+      tags:
+        - health
+      summary: Health check do sistema
+      operationId: getHealth
+      responses:
+        '200':
+          description: Sistema operacional
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: Serviço indisponível
+
+  /sync/calendar:
+    post:
+      tags:
+        - sync
+      summary: Recebe delta do Google Calendar para processamento
+      description: |
+        Endpoint chamado pelo webhook do Google Pub/Sub quando há mudanças no calendar.
+        Processa eventos adicionados, modificados ou removidos com resolução de conflitos.
+        
+        ## Resolução de Conflitos
+        - Estratégia: last_write_wins com timestamp UTC
+        - Conflitos são logados em audit trail
+        - Sync convergence < 5s após reconnect (NFR-02)
+      operationId: postCalendarDelta
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarDelta'
+      responses:
+        '200':
+          description: Sync processado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResult'
+          headers:
+            X-RateLimit-Remaining:
+              schema:
+                type: integer
+              description: Requests restantes na janela atual
+            X-Sync-Latency-Ms:
+              schema:
+                type: integer
+              description: Latência do processamento em ms (NFR-01: P95 < 300ms)
+        '401':
+          description: Token expirado ou inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Conflito de sync detectado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictDetail'
+        '429':
+          description: Rate limit exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Segundos para retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sync/tasks:
+    post:
+      tags:
+        - sync
+      summary: Recebe delta do Google Tasks
+      operationId: postTasksDelta
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TasksDelta'
+      responses:
+        '200':
+          description: Sync processado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /sync/status:
+    get:
+      tags:
+        - sync
+      summary: Status da última sincronização
+      operationId: getSyncStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: includeMetrics
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Incluir métricas de performance (latência, conflicts)
+      responses:
+        '200':
+          description: Status retornado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /intelligence/triage:
+    post:
+      tags:
+        - intelligence
+      summary: Processa tarefas via IA para priorização com contexto TDAH
+      description: |
+        Envia contexto estruturado para LLM provider e recebe priorização.
+        
+        ## Critérios de Priorização TDAH
+        - **time_pressure**: deadline < 2h → prioridade crítica
+        - **context_switching**: tarefas agrupadas por contexto
+        - **energy_level**: baseado em histórico do usuário
+        - **buffer_compliance**: respeita buffer de transição configurado
+        
+        ## Metering
+        - Cada chamada é registrada em ai_metering para billing
+        - Model routing por custo (OpenRouter/Together AI/Qwen)
+        - Fallback heurístico se LLM indisponível
+      operationId: postTaskTriage
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriageRequest'
+      responses:
+        '200':
+          description: Priorização completada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriageResult'
+          headers:
+            X-AI-Cost-Microcents:
+              schema:
+                type: number
+              description: Custo da inferência em micro-centavos
+            X-AI-Model-Used:
+              schema:
+                type: string
+              description: Modelo utilizado (ex: gpt-4o-mini, qwen-72b)
+            X-AI-Latency-Ms:
+              schema:
+                type: integer
+              description: Latência total da inferência
+        '400':
+          description: Contexto inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate limit ou quota excedida
+        '503':
+          description: AI provider indisponível (fallback heurístico ativado)
+
+  /intelligence/priority-rules:
+    get:
+      tags:
+        - intelligence
+      summary: Retorna regras de priorização configuradas pelo usuário
+      operationId: getPriorityRules
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Regras retornadas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriorityRules'
+    put:
+      tags:
+        - intelligence
+      summary: Atualiza regras de priorização TDAH
+      operationId: updatePriorityRules
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PriorityRulesInput'
+      responses:
+        '200':
+          description: Regras atualizadas
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /notification/push/send:
+    post:
+      tags:
+        - notification
+      summary: Dispara notificação push escalonada
+      description: |
+        ## Escalonamento ADHD-Friendly
+        1. **Push notification** (imediato)
+        2. **Som alto** (após 5min sem resposta)
+        3. **Email/SMS fallback** (após 15min sem resposta)
+        
+        ## Offline Support
+        - Service Worker armazena em fila local IndexedDB
+        - Retry exponencial ao reconectar (backoff: 1m, 5m, 15m, 1h)
+        - SLA de delivery < 95% (FR-03)
+      operationId: sendEscalatedPush
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushNotification'
+      responses:
+        '202':
+          description: Notificação aceita para entrega
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /notification/preferences:
+    get:
+      tags:
+        - notification
+      summary: Preferências de notificação do usuário
+      operationId: getNotificationPreferences
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Preferências retornadas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+    put:
+      tags:
+        - notification
+      summary: Atualiza preferências de notificação
+      operationId: updateNotificationPreferences
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreferencesInput'
+      responses:
+        '200':
+          description: Preferências atualizadas
+
+  /compliance/consent:
+    get:
+      tags:
+        - compliance
+      summary: Status de consentimentos LGPD/GDPR
+      operationId: getConsentStatus
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Consentimentos retornados
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsentStatus'
+    post:
+      tags:
+        - compliance
+      summary: Registra novo consentimento explícito
+      operationId: grantConsent
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsentGrant'
+      responses:
+        '201':
+          description: Consentimento registrado
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /compliance/erase:
+    delete:
+      tags:
+        - compliance
+      summary: Direito ao esquecimento (LGPD Art. 18 / GDPR Art. 17)
+      description: |
+        ## Processo de Deleção
+        1. Validação de consentimento prévio
+        2. Criptografia de dados PII com chave efêmera
+        3. Agendamento de job de limpeza (SLA ≤ 7 dias)
+        4. Remoção de índices
+        5. Webhook de confirmação disparado
+        
+        ## Audit Trail
+        - Requisição logada com timestamp e IP
+        - Job ID retornado para tracking
+        - Confirmação enviada por email
+      operationId: requestDataErase
+      security:
+        - bearerAuth: []
+      responses:
+        '202':
+          description: Deleção agendada (SLA 7 dias)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EraseRequest'
+          headers:
+            X-Erase-Job-ID:
+              schema:
+                type: string
+              description: ID do job de limpeza para tracking
+            X-Erase-Deadline:
+              schema:
+                type: string
+                format: date-time
+              description: Deadline máximo para conclusão (7 dias)
+        '403':
+          description: Consentimento não validado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /compliance/export:
+    post:
+      tags:
+        - compliance
+      summary: Exportação de dados (LGPD Art. 18 / GDPR Art. 20)
+      description: |
+        ## Formatos Suportados
+        - **JSON**: Dados completos com audit trail
+        - **ICS**: Calendário compatível com todos os clients
+        - **CSV**: Tarefas e metadados
+        
+        ## Processo
+        1. Geração assíncrona do export
+        2. URL temporária válida por 24h
+        3. Download direto ou envio por email
+      operationId: requestDataExport
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportRequest'
+      responses:
+        '202':
+          description: Exportação gerada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /compliance/dpo:
+    post:
+      tags:
+        - compliance
+      summary: Contato com DPO (Data Protection Officer)
+      description: |
+        Canal oficial para questões de privacidade e proteção de dados.
+        Resposta em até 5 dias úteis (SLA regulatório).
+      operationId: contactDPO
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DPOContact'
+      responses:
+        '202':
+          description: Mensagem encaminhada ao DPO
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /metering/usage:
+    get:
+      tags:
+        - metering
+      summary: Uso atual do usuário (para billing e limites)
+      operationId: getUsage
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [current_month, last_month, last_30_days]
+            default: current_month
+      responses:
+        '200':
+          description: Uso retornado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageReport'
+
+  /metering/feature-flags:
+    get:
+      tags:
+        - metering
+      summary: Feature flags ativos para o usuário
+      description: |
+        ## Feature Flags Disponíveis
+        - **adhd_escalation**: Alertas escalonados ADHD-friendly (free/pro)
+        - **voice_input**: Entrada por voz (pro only - futuro)
+        - **multi_calendar**: Múltiplas contas Google (pro/enterprise)
+        - **ai_scheduling**: Agendamento automático por IA (pro only)
+        - **team_collab**: Colaboração em equipe (enterprise only)
+      operationId: getFeatureFlags
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Feature flags retornados
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeatureFlags'
+
+  /auth/google/callback:
+    get:
+      tags:
+        - health
+      summary: Callback OAuth2 Google (PKCE flow)
+      description: |
+        Parte do fluxo OAuth2 PKCE para autenticação Google.
+        Não chamar diretamente - redirecionamento automático.
+      operationId: googleOAuthCallback
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redireciona para app após auth
+        '400':
+          description: Estado inválido ou código expirado
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT obtido via OAuth2 PKCE ou Supabase Auth
+
+  schemas:
+    HealthStatus:
+      type: object
+      required:
+        - status
+        - timestamp
+        - version
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+        uptime_seconds:
+          type: integer
+        dependencies:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [connected, disconnected]
+            google_api:
+              type: string
+              enum: [available, rate_limited, unavailable]
+            ai_provider:
+              type: string
+              enum: [available, degraded, unavailable]
+
+    CalendarDelta:
+      type: object
+      required:
+        - sync_token
+      properties:
+        events_added:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarEvent'
+        events_modified:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarEvent'
+        events_removed:
+          type: array
+          items:
+            type: string
+            format: uuid
+        sync_token:
+          type: string
+          description: Token de sync para controle de delta
+        next_sync_token:
+          type: string
+        expiration:
+          type: string
+          format: date-time
+
+    CalendarEvent:
+      type: object
+      required:
+        - id
+        - summary
+        - start
+        - end
+      properties:
+        id:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        start:
+          type: object
+          properties:
+            dateTime:
+              type: string
+              format: date-time
+            timeZone:
+              type: string
+        end:
+          type: object
+          properties:
+            dateTime:
+              type: string
+              format: date-time
+            timeZone:
+              type: string
+        attendees:
+          type: array
+          items:
+            type: object
+            properties:
+              email:
+                type: string
+              responseStatus:
+                type: string
+                enum: [accepted, declined, tentative, needsAction]
+        reminders:
+          type: object
+          properties:
+            useDefault:
+              type: boolean
+            overrides:
+              type: array
+              items:
+                type: object
+                properties:
+                  method:
+                    type: string
+                    enum: [email, popup, sms]
+                  minutes:
+                    type: integer
+        recurrence:
+          type: array
+          items:
+            type: string
+        colorId:
+          type: string
+        transparency:
+          type: string
+          enum: [opaque, transparent]
+        visibility:
+          type: string
+          enum: [default, public, private, confidential]
+        created:
+          type: string
+          format: date-time
+        updated:
+          type: string
+          format: date-time
+        creator_adhd_context:
+          type: object
+          description: Metadados específicos para contexto TDAH
+          properties:
+            buffer_minutes:
+              type: integer
+              default: 15
+            focus_block_minutes:
+              type: integer
+              default: 45
+            priority_override:
+              type: string
+              enum: [critical, high, medium, low]
+
+    TasksDelta:
+      type: object
+      required:
+        - sync_token
+      properties:
+        tasks_added:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        tasks_modified:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        tasks_removed:
+          type: array
+          items:
+            type: string
+        sync_token:
+          type: string
+
+    Task:
+      type: object
+      required:
+        - id
+        - title
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        notes:
+          type: string
+        status:
+          type: string
+          enum: [needsAction, completed, delegated, declined]
+        due:
+          type: string
+          format: date-time
+        completed:
+          type: string
+          format: date-time
+        deleted:
+          type: boolean
+          default: false
+        hidden:
+          type: boolean
+          default: false
+        links:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              link:
+                type: string
+        position:
+          type: string
+        etag:
+          type: string
+        updated:
+          type: string
+          format: date-time
+        self:
+          type: string
+          format: uri
+        parent:
+          type: string
+        order:
+          type: string
+
+    SyncResult:
+      type: object
+      required:
+        - success
+        - processed_at
+      properties:
+        success:
+          type: boolean
+        processed_at:
+          type: string
+          format: date-time
+        events_processed:
+          type: integer
+        conflicts_resolved:
+          type: integer
+        latency_ms:
+          type: integer
+        next_sync_token:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+
+    ConflictDetail:
+      type: object
+      required:
+        - event_id
+        - conflict_type
+        - resolution
+      properties:
+        event_id:
+          type: string
+        conflict_type:
+          type: string
+          enum: [double_booking, overlapping, time_shift, duplicate]
+        local_version:
+          $ref: '#/components/schemas/CalendarEvent'
+        remote_version:
+          $ref: '#/components/schemas/CalendarEvent'
+        resolution:
+          type: string
+          enum: [local_wins, remote_wins, merged, manual_required]
+        resolved_at:
+          type: string
+          format: date-time
+        audit_log_id:
+          type: string
+
+    SyncStatus:
+      type: object
+      required:
+        - last_sync
+        - status
+      properties:
+        last_sync:
+          type: string
+          format: date-time
+        next_sync_scheduled:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [synced, syncing, pending, error]
+        pending_changes:
+          type: integer
+        conflicts_pending:
+          type: integer
+        metrics:
+          type: object
+          properties:
+            avg_latency_ms:
+              type: number
+            p95_latency_ms:
+              type: number
+            conflicts_last_24h:
+              type: integer
+            sync_success_rate:
+              type: number
+              format: float
+              minimum: 0
+              maximum: 1
+
+    TriageRequest:
+      type: object
+      required:
+        - tasks
+        - user_context
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        user_context:
+          type: object
+          required:
+            - adhd_profile_active
+          properties:
+            adhd_profile_active:
+              type: boolean
+            current_time:
+              type: string
+              format: date-time
+            energy_level:
+              type: string
+              enum: [high, medium, low, unknown]
+            focus_block_remaining:
+              type: integer
+              description: Minutos restantes no bloco de foco atual
+            scheduled_breaks:
+              type: array
+              items:
+                type: object
+                properties:
+                  start:
+                    type: string
+                    format: date-time
+                  duration_minutes:
+                    type: integer
+            preferences:
+              type: object
+              properties:
+                buffer_minutes:
+                  type: integer
+                  default: 15
+                max_tasks_per_block:
+                  type: integer
+                  default: 3
+                context_grouping:
+                  type: boolean
+                  default: true
+
+    TriageResult:
+      type: object
+      required:
+        - prioritized_tasks
+        - processed_at
+      properties:
+        prioritized_tasks:
+          type: array
+          items:
+            type: object
+            required:
+              - task_id
+              - priority_score
+              - reason_code
+            properties:
+              task_id:
+                type: string
+              priority_score:
+                type: integer
+                minimum: 1
+                maximum: 10
+              priority_label:
+                type: string
+                enum: [critical, high, medium, low]
+              reason_code:
+                type: string
+                enum:
+                  - time_pressure
+                  - deadline_imminent
+                  - context_match
+                  - energy_alignment
+                  - dependency_chain
+                  - user_preference
+              reason_detail:
+                type: string
+              suggested_start:
+                type: string
+                format: date-time
+              estimated_duration:
+                type: integer
+                description: Minutos estimados
+              requires_buffer:
+                type: boolean
+              context_tags:
+                type: array
+                items:
+                  type: string
+        metadata:
+          type: object
+          properties:
+            model_used:
+              type: string
+            inference_time_ms:
+              type: integer
+            cost_microcents:
+              type: number
+            fallback_used:
+              type: boolean
+              description: True se usou heurística ao invés de LLM
+
+    PriorityRules:
+      type: object
+      properties:
+        buffer_minutes:
+          type: integer
+          default: 15
+        focus_block_minutes:
+          type: integer
+          default: 45
+        max_consecutive_tasks:
+          type: integer
+          default: 3
+        break_frequency_minutes:
+          type: integer
+          default: 90
+        priority_weights:
+          type: object
+          properties:
+            deadline_proximity:
+              type: number
+              default: 0.4
+            task_importance:
+              type: number
+              default: 0.3
+            energy_match:
+              type: number
+              default: 0.2
+            context_switching:
+              type: number
+              default: 0.1
+        quiet_hours:
+          type: array
+          items:
+            type: object
+            properties:
+              start:
+                type: string
+                format: time
+              end:
+                type: string
+                format: time
+
+    PriorityRulesInput:
+      type: object
+      properties:
+        buffer_minutes:
+          type: integer
+          minimum: 0
+          maximum: 60
+        focus_block_minutes:
+          type: integer
+          minimum: 15
+          maximum: 120
+        max_consecutive_tasks:
+          type: integer
+          minimum: 1
+          maximum: 10
+        break_frequency_minutes:
+          type: integer
+          minimum: 30
+          maximum: 180
+        priority_weights:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 1
+        quiet_hours:
+          type: array
+          items:
+            type: object
+            properties:
+              start:
+                type: string
+                format: time
+              end:
+                type: string
+                format: time
+
+    PushNotification:
+      type: object
+      required:
+        - title
+        - type
+      properties:
+        title:
+          type: string
+        body:
+          type: string
+        type:
+          type: string
+          enum: [reminder, escalation, alert, info]
+        urgency:
+          type: string
+          enum: [low, normal, high, critical]
+        event_id:
+          type: string
+        task_id:
+          type: string
+        scheduled_for:
+          type: string
+          format: date-time
+        escalation_config:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            levels:
+              type: array
+              items:
+                type: object
+                properties:
+                  delay_minutes:
+                    type: integer
+                  method:
+                    type: string
+                    enum: [push, sound, email, sms]
+                  message:
+                    type: string
+        adhd_optimized:
+          type: boolean
+          default: true
+          description: Usa padrões visuais/sonoros otimizados para TDAH
+
+    NotificationStatus:
+      type: object
+      required:
+        - notification_id
+        - status
+      properties:
+        notification_id:
+          type: string
+        status:
+          type: string
+          enum: [queued, sent, delivered, failed, escalated]
+        queued_at:
+          type: string
+          format: date-time
+        sent_at:
+          type: string
+          format: date-time
+        delivered_at:
+          type: string
+          format: date-time
+        escalation_level:
+          type: integer
+        failure_reason:
+          type: string
+
+    NotificationPreferences:
+      type: object
+      properties:
+        push_enabled:
+          type: boolean
+          default: true
+        sound_enabled:
+          type: boolean
+          default: true
+        email_fallback_enabled:
+          type: boolean
+          default: false
+        sms_fallback_enabled:
+          type: boolean
+          default: false
+        quiet_hours_enabled:
+          type: boolean
+          default: false
+        quiet_hours:
+          type: array
+          items:
+            type: object
+            properties:
+              start:
+                type: string
+                format: time
+              end:
+                type: string
+                format: time
+        escalation_delay_minutes:
+          type: integer
+          default: 5
+        adhd_sound_patterns:
+          type: boolean
+          default: true
+          description: Usa padrões sonoros variados para evitar habituação
+
+    NotificationPreferencesInput:
+      type: object
+      properties:
+        push_enabled:
+          type: boolean
+        sound_enabled:
+          type: boolean
+        email_fallback_enabled:
+          type: boolean
+        sms_fallback_enabled:
+          type: boolean
+        quiet_hours_enabled:
+          type: boolean
+        quiet_hours:
+          type: array
+          items:
+            type: object
+            properties:
+              start:
+                type: string
+                format: time
+              end:
+                type: string
+                format: time
+        escalation_delay_minutes:
+          type: integer
+          minimum: 1
+          maximum: 60
+        adhd_sound_patterns:
+          type: boolean
+
+    ConsentStatus:
+      type: object
+      required:
+        - consents
+      properties:
+        consents:
+          type: array
+          items:
+            type: object
+            required:
+              - type
+              - granted
+              - granted_at
+            properties:
+              type:
+                type: string
+                enum:
+                  - google_calendar_sync
+                  - google_tasks_sync
+                  - ai_processing
+                  - push_notifications
+                  - analytics
+                  - marketing
+              granted:
+                type: boolean
+              granted_at:
+                type: string
+                format: date-time
+              withdrawn_at:
+                type: string
+                format: date-time
+              version:
+                type: string
+                description: Versão do termo de consentimento
+
+    ConsentGrant:
+      type: object
+      required:
+        - type
+        - granted
+      properties:
+        type:
+          type: string
+          enum:
+            - google_calendar_sync
+            - google_tasks_sync
+            - ai_processing
+            - push_notifications
+            - analytics
+            - marketing
+        granted:
+          type: boolean
+        version:
+          type: string
+        ip_address:
+          type: string
+        user_agent:
+          type: string
+
+    EraseRequest:
+      type: object
+      required:
+        - job_id
+        - requested_at
+        - deadline
+      properties:
+        job_id:
+          type: string
+        requested_at:
+          type: string
+          format: date-time
+        deadline:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+        confirmation_email_sent:
+          type: boolean
+
+    ExportRequest:
+      type: object
+      required:
+        - format
+      properties:
+        format:
+          type: string
+          enum: [json, ics, csv]
+        include_audit_trail:
+          type: boolean
+          default: false
+        date_range:
+          type: object
+          properties:
+            start:
+              type: string
+              format: date-time
+            end:
+              type: string
+              format: date-time
+        delivery_method:
+          type: string
+          enum: [download, email]
+          default: download
+        email:
+          type: string
+          format: email
+
+    ExportResult:
+      type: object
+      required:
+        - export_id
+        - status
+      properties:
+        export_id:
+          type: string
+        status:
+          type: string
+          enum: [processing, ready, failed]
+        download_url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
+        file_size_bytes:
+          type: integer
+        record_count:
+          type: integer
+
+    DPOContact:
+      type: object
+      required:
+        - subject
+        - message
+      properties:
+        subject:
+          type: string
+        message:
+          type: string
+        category:
+          type: string
+          enum:
+            - data_access
+            - data_correction
+            - data_deletion
+            - data_portability
+            - consent_withdrawal
+            - general_inquiry
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+
+    UsageReport:
+      type: object
+      required:
+        - period
+        - usage
+      properties:
+        period:
+          type: string
+        usage:
+          type: object
+          properties:
+            google_api_calls:
+              type: integer
+            ai_triage_runs:
+              type: integer
+            notification_pushes:
+              type: integer
+            storage_mb:
+              type: number
+        limits:
+          type: object
+          properties:
+            google_api_calls:
+              type: integer
+            ai_triage_runs:
+              type: integer
+            notification_pushes:
+              type: integer
+            storage_mb:
+              type: integer
+        tier:
+          type: string
+          enum: [free_mvp, pro_ai_scheduling, enterprise_team]
+        overage_charges:
+          type: number
+          format: float
+
+    FeatureFlags:
+      type: object
+      properties:
+        adhd_escalation:
+          type: boolean
+          description: Alertas escalonados ADHD-friendly
+        voice_input:
+          type: boolean
+          description: Entrada por voz (futuro)
+        multi_calendar:
+          type: boolean
+          description: Múltiplas contas Google
+        ai_scheduling:
+          type: boolean
+          description: Agendamento automático por IA
+        team_collab:
+          type: boolean
+          description: Colaboração em equipe
+        custom_themes:
+          type: boolean
+          description: Temas personalizados
+        advanced_analytics:
+          type: boolean
+          description: Analytics avançado de produtividade
+
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+        trace_id:
+          type: string
+          description: ID para debugging no backend
+
+  responses:
+    Unauthorized:
+      description: Não autorizado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadRequest:
+      description: Requisição inválida
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Recurso não encontrado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
